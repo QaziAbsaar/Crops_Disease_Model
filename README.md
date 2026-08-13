@@ -64,8 +64,8 @@ notebooks/                 Colab notebooks, run in order
 | `Notebook1_Ingest_Unify.ipynb` | Done | Downloads all 8 sources, normalizes into unified `crop/disease/` layout, builds manifest CSV, integrity-checks (corrupt/duplicate removal), persists to Google Drive as a single zip |
 | `Notebook2_Stage1_CropClassifier.ipynb` | Done | LeafNet domain-pretrain (EfficientNetV2-S, 3 epochs, 98% train acc) → Stage-1 crop classifier finetune (6-way, class-weighted). Val accuracy ~100% (crop *types* are visually very distinct — expected result, not a leakage red flag) |
 | `Notebook3_Stage2_DiseaseHeads.ipynb` | Done | Trains 6 per-crop disease classifiers, each warm-started from Stage-1's backbone. Uses a group-aware train/val split (images grouped by inferred source photo, namespaced by disease) to prevent augmentation duplicates from leaking between train and val — see results below |
-| Notebook 4 (distillation) | Planned | Teacher → MobileNetV3 student, per stage |
-| Notebook 5 (export) | Planned | TFLite conversion, INT8 quantization, on-device test |
+| `Notebook4_Distillation.ipynb` | Done | Distills each teacher (EfficientNetV2-S) into a MobileNetV3-Large student — 7 distillations (Stage-1 + 6 Stage-2 heads), same group-aware split as Notebook 3, per-target resumable. Trained on Kaggle Notebooks (Colab GPU quota exhausted on two accounts) — checkpoints synced back to Drive manually |
+| `Notebook5_Export_TFLite.ipynb` | Done | Exports each student to INT8-quantized TFLite (PyTorch → ONNX → TensorFlow SavedModel via `onnx2tf` → TFLite). Wraps each model so the exported graph takes raw 0-255 pixel input and normalizes internally — no preprocessing math needed app-side. Footprint target met (9.5MB worst-case); quantization accuracy caveat below |
 
 ### Stage-2 disease classifier results (post-leakage-fix)
 
@@ -81,6 +81,36 @@ Several source datasets turned out to be pre-augmented (rotated/zoomed/cropped c
 | Wheat | 100% | 0 / 5,137 | — |
 
 **Mango and rice caveat**: the duplicate-detection heuristic is filename-pattern-based and found nothing for these two, yet both still score 100%. This could mean the classes are genuinely easy to separate (MangoLeafBD in particular is documented in published work as achieving ~99-100% test accuracy even under proper random splits — its 8 disease classes are visually very distinct), or it could mean these datasets' augmentation duplicates use a naming convention the heuristic doesn't recognize. Not resolved — worth a manual sanity check (e.g. eyeballing whether visually similar images appear in both train and val) before fully trusting these two numbers.
+
+### Distillation results (teacher EfficientNetV2-S → student MobileNetV3-Large)
+
+| Target | Classes | Teacher val acc | Student val acc | Δ | Teacher params | Student params |
+|---|---|---|---|---|---|---|
+| Stage-1 (crop) | 6 | 99.91% | 99.76% | -0.15% | 20.19M | 4.21M |
+| Citrus | 5 | 94.57% | 94.57% | 0.00% | 20.18M | 4.21M |
+| Cotton | 6 | 99.65% | 99.30% | -0.35% | 20.19M | 4.21M |
+| Mango | 8 | 100% | 100% | 0.00% | 20.19M | 4.21M |
+| Rice | 4 | 100% | 100% | 0.00% | 20.18M | 4.21M |
+| Sugarcane | 6 | 95.25% | 95.70% | +0.45% | 20.19M | 4.21M |
+| Wheat | 7 | 99.87% | 99.48% | -0.39% | 20.19M | 4.21M |
+
+Distillation is essentially lossless — largest drop is -0.39% (wheat), sugarcane actually improved slightly. ~4.8x parameter reduction (20.19M → 4.21M) before quantization; the real on-device size reduction comes from Notebook 5's INT8 quantization.
+
+### TFLite export results (INT8 quantized)
+
+| Target | Student val acc | TFLite INT8 val acc | Drop | Size |
+|---|---|---|---|---|
+| Stage-1 (crop) | 99.76% | 99.22% | -0.54% | 4.75 MB |
+| Citrus | 94.57% | 88.04% | **-6.52%** | 4.74 MB |
+| Cotton | 99.30% | 95.07% | **-4.23%** | 4.75 MB |
+| Mango | 100% | 98.49% | -1.51% | 4.75 MB |
+| Rice | 100% | 94.86% | **-5.14%** | 4.74 MB |
+| Sugarcane | 95.70% | 87.42% | **-8.28%** | 4.75 MB |
+| Wheat | 99.48% | 99.48% | 0.00% | 4.75 MB |
+
+**Footprint**: worst-case on-device load (Stage-1 + one active Stage-2 head) is 9.5MB — comfortably under the spec's <15MB target.
+
+**Known caveat (v1, accepted for now)**: post-training INT8 quantization cost real accuracy on 4 of 7 targets — sugarcane (-8.3%), citrus (-6.5%), rice (-5.1%), cotton (-4.2%). Wheat and mango were barely affected. Sugarcane is the largest dataset here and a major Pakistani crop by area, so an 8-point drop is a real quality gap, not noise. Decided to ship as-is for v1 rather than invest in quantization-aware training (QAT) now — revisit with QAT for these four targets if real-world testing shows the gap actually matters in practice. The spec anticipated this exact scenario ("fall back to QAT if the accuracy drop is too large").
 
 ## Running the notebooks
 
