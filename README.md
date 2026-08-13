@@ -62,10 +62,25 @@ notebooks/                 Colab notebooks, run in order
 | Notebook | Status | Purpose |
 |---|---|---|
 | `Notebook1_Ingest_Unify.ipynb` | Done | Downloads all 8 sources, normalizes into unified `crop/disease/` layout, builds manifest CSV, integrity-checks (corrupt/duplicate removal), persists to Google Drive as a single zip |
-| `Notebook2_Stage1_CropClassifier.ipynb` | In progress | LeafNet domain-pretrain (EfficientNetV2-S, 3 epochs) → Stage-1 crop classifier finetune (6-way, class-weighted) |
-| Notebook 3 (Stage-2 disease heads, ×6) | Planned | Per-crop disease classifier, reusing the Stage-1 backbone |
+| `Notebook2_Stage1_CropClassifier.ipynb` | Done | LeafNet domain-pretrain (EfficientNetV2-S, 3 epochs, 98% train acc) → Stage-1 crop classifier finetune (6-way, class-weighted). Val accuracy ~100% (crop *types* are visually very distinct — expected result, not a leakage red flag) |
+| `Notebook3_Stage2_DiseaseHeads.ipynb` | Done | Trains 6 per-crop disease classifiers, each warm-started from Stage-1's backbone. Uses a group-aware train/val split (images grouped by inferred source photo, namespaced by disease) to prevent augmentation duplicates from leaking between train and val — see results below |
 | Notebook 4 (distillation) | Planned | Teacher → MobileNetV3 student, per stage |
 | Notebook 5 (export) | Planned | TFLite conversion, INT8 quantization, on-device test |
+
+### Stage-2 disease classifier results (post-leakage-fix)
+
+Several source datasets turned out to be pre-augmented (rotated/zoomed/cropped copies of the same base leaf photo under different filenames). A naive random train/val split lets those siblings land on both sides, inflating validation accuracy. Fixed by grouping images by an inferred source-photo key (stripped of known augmentation-prefix patterns, namespaced per disease) before splitting, so siblings always stay together.
+
+| Crop | Val accuracy | Duplicates found | Notes |
+|---|---|---|---|
+| Citrus | 94.6% | 0 / 607 | Smallest dataset (one class, Melanose, has only 2 images) — expect noisy numbers here regardless |
+| Cotton | ~100% (99.65% final epoch) | 2 / 1,887 | Disease classes are visually distinct (curl virus vs. wilt vs. blight) |
+| Mango | 100% | 0 / 3,979 (by filename) | Unresolved caveat — see below |
+| Rice | 100% | 0 / 4,794 (by filename) | Unresolved caveat — see below |
+| Sugarcane | 95.3% | **15,765 / 19,160 (82%)** | Confirms the leakage was real — accuracy dropped from a pre-fix 96.8% to a more believable 95.3% once duplicates were properly held out |
+| Wheat | 100% | 0 / 5,137 | — |
+
+**Mango and rice caveat**: the duplicate-detection heuristic is filename-pattern-based and found nothing for these two, yet both still score 100%. This could mean the classes are genuinely easy to separate (MangoLeafBD in particular is documented in published work as achieving ~99-100% test accuracy even under proper random splits — its 8 disease classes are visually very distinct), or it could mean these datasets' augmentation duplicates use a naming convention the heuristic doesn't recognize. Not resolved — worth a manual sanity check (e.g. eyeballing whether visually similar images appear in both train and val) before fully trusting these two numbers.
 
 ## Running the notebooks
 
